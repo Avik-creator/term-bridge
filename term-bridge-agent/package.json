@@ -1,0 +1,36 @@
+{
+  "name": "term-bridge-agent",
+  "version": "1.0.5",
+  "description": "Term Bridge host agent - shares your real terminal over a WebRTC DataChannel",
+  "bin": {
+    "term-bridge": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    ".env"
+  ],
+  "scripts": {
+    "build": "tsx --no-warnings scripts/build.ts",
+    "dev": "npx tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "dotenv": "^16.4.5",
+    "node-datachannel": "^0.32.1",
+    "node-pty": "^1.1.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0"
+  },
+  "trustedDependencies": [
+    "node-pty",
+    "node-datachannel"
+  ]
+}
