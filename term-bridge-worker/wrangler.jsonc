@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "term-bridge-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-14",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Durable Object class for session signaling rooms
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSION_ROOMS",
+        "class_name": "SessionRoom"
+      }
+    ]
+  },
+
+  // SQLite-backed DO (recommended for new classes)
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionRoom"]
+    }
+  ],
+
+  // KV namespace for 6-digit code → sessionId mapping
+  "kv_namespaces": [
+    {
+      "binding": "CODES",
+      "id": "01920e62d16e43e3bba807402f5441e0",
+      "preview_id": "efe1b26aa04b46b89422cdb965abe355"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}
