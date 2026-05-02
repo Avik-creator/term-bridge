@@ -1,9 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import nodeDataChannel from "node-datachannel";
+import * as pty from "node-pty";
 import WebSocket from "ws";
 import { getSignalingBase } from "./config";
 import { closeRtcResources } from "./rtc-cleanup";
+import { spawnShell } from "./pty";
 import {
   handleCommand,
   CommandContext,
@@ -43,6 +45,8 @@ export async function connectClient(code: string): Promise<void> {
     let cleanupClientTerminal: (() => void) | null = null;
     let peerAddress: string | undefined;
     let connectedAt: Date | undefined;
+    let clientPty: pty.IPty | null = null;
+    let viewMode: "local" | "remote" = "remote";
     let transferState: {
       filename: string;
       size: number;
@@ -58,6 +62,7 @@ export async function connectClient(code: string): Promise<void> {
       if (settled) return;
       settled = true;
       cleanupClientTerminal?.();
+      clientPty?.kill();
       closeRtcResources({
         dataChannel: dc,
         peerConnection: pc,
@@ -88,15 +93,31 @@ export async function connectClient(code: string): Promise<void> {
       channel.onOpen(() => {
         console.error("[DC] opened");
         connectedAt = new Date();
+
+        const cols = process.stdout.isTTY
+          ? process.stdout.columns ?? 80
+          : 80;
+        const rows = process.stdout.isTTY
+          ? process.stdout.rows ?? 24
+          : 24;
+
+        clientPty = spawnShell(cols, rows);
+
+        clientPty.onExit(({ exitCode }) => {
+          if (viewMode === "local") {
+            process.stdout.write(`\r\n\x1b[33m[Local shell exited with code ${exitCode}]\x1b[0m\r\n`);
+          }
+          clientPty = spawnShell(cols, rows);
+          wireClientPty(clientPty);
+        });
+
+        wireClientPty(clientPty);
+
         if (process.stdin.isTTY) {
           process.stdin.setRawMode(true);
         }
         process.stdin.setEncoding("utf8");
         process.stdin.resume();
-
-        const { cols, rows } = process.stdout.isTTY
-          ? { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }
-          : { cols: 80, rows: 24 };
 
         channel.sendMessage(
           JSON.stringify({ type: "resize", cols, rows })
@@ -119,6 +140,11 @@ export async function connectClient(code: string): Promise<void> {
           writeToStdout: (text: string) => {
             process.stdout.write(text);
           },
+          viewMode: "remote",
+          switchView: () => {
+            viewMode = viewMode === "remote" ? "local" : "remote";
+            cmdCtx.viewMode = viewMode;
+          },
         };
 
         const onInput = (chunk: string) => {
@@ -133,13 +159,16 @@ export async function connectClient(code: string): Promise<void> {
             if (commandMode) {
               if (ch === "\r" || ch === "\n") {
                 process.stdout.write("\r\n");
+                cmdCtx.viewMode = viewMode;
                 const handled = handleCommand(inputBuffer, cmdCtx);
                 if (handled) {
                   inputBuffer = "";
                   commandMode = false;
                   continue;
                 }
-                if (channel.isOpen()) {
+                if (viewMode === "local" && clientPty) {
+                  clientPty.write(inputBuffer + "\r");
+                } else if (channel.isOpen()) {
                   channel.sendMessage(inputBuffer + "\r");
                 }
                 inputBuffer = "";
@@ -172,7 +201,9 @@ export async function connectClient(code: string): Promise<void> {
               continue;
             }
 
-            if (channel.isOpen()) {
+            if (viewMode === "local") {
+              clientPty?.write(ch);
+            } else if (channel.isOpen()) {
               channel.sendMessage(ch);
             }
           }
@@ -182,13 +213,13 @@ export async function connectClient(code: string): Promise<void> {
         let onResize: (() => void) | null = null;
         if (process.stdout.isTTY) {
           onResize = () => {
-            if (channel.isOpen()) {
+            const c = process.stdout.columns ?? 80;
+            const r = process.stdout.rows ?? 24;
+            if (viewMode === "local" && clientPty) {
+              clientPty.resize(c, r);
+            } else if (channel.isOpen()) {
               channel.sendMessage(
-                JSON.stringify({
-                  type: "resize",
-                  cols: process.stdout.columns ?? 80,
-                  rows: process.stdout.rows ?? 24,
-                })
+                JSON.stringify({ type: "resize", cols: c, rows: r })
               );
             }
           };
@@ -213,7 +244,9 @@ export async function connectClient(code: string): Promise<void> {
           return;
         }
 
-        process.stdout.write(raw);
+        if (viewMode === "remote") {
+          process.stdout.write(raw);
+        }
       });
 
       channel.onClosed(() => {
@@ -227,6 +260,17 @@ export async function connectClient(code: string): Promise<void> {
       });
     });
 
+    function wireClientPty(cPty: pty.IPty): void {
+      cPty.onData((data: string) => {
+        if (viewMode === "local") {
+          process.stdout.write(data);
+        }
+        if (dc?.isOpen()) {
+          dc.sendMessage(encodeCtrl({ type: "rev_data", data }));
+        }
+      });
+    }
+
     function handleIncomingCtrl(ctrl: CtrlMsg): void {
       switch (ctrl.type) {
         case "kick":
@@ -235,6 +279,12 @@ export async function connectClient(code: string): Promise<void> {
           break;
         case "cmd_response":
           process.stdout.write(ctrl.text + "\r\n");
+          break;
+        case "rev_input":
+          clientPty?.write(ctrl.data);
+          break;
+        case "rev_resize":
+          clientPty?.resize(ctrl.cols, ctrl.rows);
           break;
         case "transfer_start":
           transferState = {
