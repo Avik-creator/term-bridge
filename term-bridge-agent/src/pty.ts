@@ -54,6 +54,46 @@ function fixPtyNativeBinaries(): void {
   } catch {}
 }
 
+export function spawnShell(cols = 220, rows = 50): pty.IPty {
+  const platform = process.platform;
+  let shellBin: string;
+
+  if (platform === "win32") {
+    shellBin = process.env.COMSPEC ?? "cmd.exe";
+  } else {
+    shellBin = process.env.SHELL ?? "/bin/bash";
+    if (platform === "darwin" && !fs.existsSync("/bin/zsh")) {
+      shellBin = "/bin/bash";
+    }
+  }
+
+  if (!fs.existsSync(shellBin)) {
+    throw new Error(`Shell not found: ${shellBin}`);
+  }
+
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env.TERM_BRIDGE = "1";
+  env.TERM = "xterm-256color";
+  env.COLORTERM = "truecolor";
+
+  console.error("[HOST] Spawning shell:", shellBin);
+
+  fixPtyNativeBinaries();
+
+  const term = pty.spawn(shellBin, [], {
+    name: "xterm-256color",
+    cols,
+    rows,
+    cwd: process.env.HOME ?? process.cwd(),
+    env,
+  });
+
+  return term;
+}
+
 export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(opts.signalingUrl);
@@ -64,6 +104,9 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
     let cleanupHostTerminal: (() => void) | null = null;
     let peerAddress: string | undefined;
     let connectedAt: Date | undefined;
+    let viewMode: "local" | "remote" = "local";
+
+    const getViewMode = () => viewMode;
 
     const done = (err?: Error) => {
       if (settled) return;
@@ -119,6 +162,20 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
                 shell,
                 sendRemote: (data) => {
                   if (dc!.isOpen()) dc!.sendMessage(data);
+                },
+                sendRevInput: (data) => {
+                  if (dc!.isOpen()) {
+                    dc!.sendMessage(encodeCtrl({ type: "rev_input", data }));
+                  }
+                },
+                getViewMode,
+                onSwitchView: () => {
+                  viewMode = viewMode === "local" ? "remote" : "local";
+                  if (viewMode === "remote" && dc?.isOpen()) {
+                    const cols = process.stdout.columns ?? 80;
+                    const rows = process.stdout.rows ?? 24;
+                    dc.sendMessage(encodeCtrl({ type: "rev_resize", cols, rows }));
+                  }
                 },
                 peerAddress,
                 connectedAt,
@@ -201,6 +258,11 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
 
     function handleIncomingCtrl(ctrl: CtrlMsg): void {
       switch (ctrl.type) {
+        case "rev_data":
+          if (viewMode === "remote") {
+            process.stdout.write(ctrl.data);
+          }
+          break;
         case "kick":
           break;
         case "cmd":
@@ -236,46 +298,6 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
       }
     }
   });
-}
-
-function spawnShell(): pty.IPty {
-  const platform = process.platform;
-  let shellBin: string;
-
-  if (platform === "win32") {
-    shellBin = process.env.COMSPEC ?? "cmd.exe";
-  } else {
-    shellBin = process.env.SHELL ?? "/bin/bash";
-    if (platform === "darwin" && !fs.existsSync("/bin/zsh")) {
-      shellBin = "/bin/bash";
-    }
-  }
-
-  if (!fs.existsSync(shellBin)) {
-    throw new Error(`Shell not found: ${shellBin}`);
-  }
-
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value;
-  }
-  env.TERM_BRIDGE = "1";
-  env.TERM = "xterm-256color";
-  env.COLORTERM = "truecolor";
-
-  console.error("[HOST] Spawning shell:", shellBin);
-
-  fixPtyNativeBinaries();
-
-  const term = pty.spawn(shellBin, [], {
-    name: "xterm-256color",
-    cols: 220,
-    rows: 50,
-    cwd: process.env.HOME ?? process.cwd(),
-    env,
-  });
-
-  return term;
 }
 
 function wsSend(ws: WebSocket, data: object): void {
