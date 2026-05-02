@@ -5,7 +5,10 @@ export type CtrlMsg =
   | { type: "kick" }
   | { type: "transfer_start"; filename: string; size: number }
   | { type: "transfer_chunk"; index: number; data: string }
-  | { type: "transfer_end"; filename: string };
+  | { type: "transfer_end"; filename: string }
+  | { type: "rev_data"; data: string }
+  | { type: "rev_input"; data: string }
+  | { type: "rev_resize"; cols: number; rows: number };
 
 export function isCtrlMsg(raw: string): boolean {
   return raw.startsWith("\x00TB:");
@@ -31,6 +34,8 @@ export interface CommandContext {
   sendCtrl: (msg: CtrlMsg) => void;
   disconnect: () => void;
   writeToStdout: (text: string) => void;
+  viewMode: "local" | "remote";
+  switchView: () => void;
 }
 
 export function handleCommand(input: string, ctx: CommandContext): boolean {
@@ -53,6 +58,7 @@ export function handleCommand(input: string, ctx: CommandContext): boolean {
       ctx.writeToStdout("\r\n\x1b[1mTerm Bridge Commands:\x1b[0m\r\n");
       ctx.writeToStdout("  \x1b[36m/exit\x1b[0m, \x1b[36m/quit\x1b[0m   Disconnect session\r\n");
       ctx.writeToStdout("  \x1b[36m/status\x1b[0m          Show connection info\r\n");
+      ctx.writeToStdout("  \x1b[36m/switch\x1b[0m          Switch local ↔ remote terminal\r\n");
       ctx.writeToStdout("  \x1b[36m/help\x1b[0m            Show this help\r\n");
       if (ctx.role === "host") {
         ctx.writeToStdout("  \x1b[36m/kick\x1b[0m            Kick the connected client\r\n");
@@ -71,9 +77,17 @@ export function handleCommand(input: string, ctx: CommandContext): boolean {
       ctx.writeToStdout(`  Role:      ${ctx.role}\r\n`);
       ctx.writeToStdout(`  Peer:      ${ctx.peerAddress ?? "unknown"}\r\n`);
       ctx.writeToStdout(`  Uptime:    ${mins}m ${secs}s\r\n`);
+      ctx.writeToStdout(`  View:      ${ctx.viewMode}\r\n`);
       ctx.writeToStdout("\r\n");
       return true;
     }
+
+    case "/switch":
+      ctx.switchView();
+      ctx.writeToStdout(
+        `\r\n\x1b[36m→ Switched to ${ctx.viewMode} terminal\x1b[0m\r\n`
+      );
+      return true;
 
     case "/kick":
       if (ctx.role !== "host") {
