@@ -75,3 +75,51 @@ test("host PTY output is mirrored locally and remotely", () => {
   assert.deepEqual(localOutput, ["hello\r\n"]);
   assert.deepEqual(remoteOutput, ["hello\r\n"]);
 });
+
+test("in remote viewMode stdin goes to sendRevInput instead of shell", () => {
+  const stdin = new FakeStdin();
+  const written: string[] = [];
+  const revInput: string[] = [];
+
+  attachHostTerminal({
+    shell: { write: (chunk) => written.push(chunk) },
+    stdin,
+    getViewMode: () => "remote",
+    sendRevInput: (data) => revInput.push(data),
+  });
+
+  stdin.emit("data", "ls\r");
+
+  assert.deepEqual(written, []);
+  assert.deepEqual(revInput, ["ls\r"]);
+});
+
+test("in remote viewMode shell output is sent remotely but not displayed locally", () => {
+  let onShellData: ((data: string) => void) | undefined;
+  const remoteOutput: string[] = [];
+  const localOutput: string[] = [];
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      localOutput.push(chunk.toString());
+      callback();
+    },
+  });
+
+  attachHostTerminal({
+    shell: {
+      write: () => {},
+      onData: (handler) => {
+        onShellData = handler;
+      },
+    },
+    stdin: new FakeStdin(),
+    stdout,
+    sendRemote: (data) => remoteOutput.push(data),
+    getViewMode: () => "remote",
+  });
+
+  onShellData?.("hello\r\n");
+
+  assert.deepEqual(localOutput, []);
+  assert.deepEqual(remoteOutput, ["hello\r\n"]);
+});

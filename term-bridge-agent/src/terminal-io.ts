@@ -1,5 +1,5 @@
 import { Writable } from "stream";
-import { handleCommand, CommandContext, encodeCtrl, decodeCtrl, CtrlMsg } from "./commands";
+import { handleCommand, CommandContext, encodeCtrl, CtrlMsg } from "./commands";
 
 interface ShellLike {
   write(data: string): void;
@@ -22,6 +22,9 @@ export interface HostTerminalOptions {
   stdin?: StdinLike;
   stdout?: Writable;
   sendRemote?: (data: string) => void;
+  sendRevInput?: (data: string) => void;
+  getViewMode?: () => "local" | "remote";
+  onSwitchView?: () => void;
   peerAddress?: string;
   connectedAt?: Date;
   onKick?: () => void;
@@ -33,6 +36,9 @@ export function attachHostTerminal({
   stdin = process.stdin,
   stdout = process.stdout,
   sendRemote,
+  sendRevInput,
+  getViewMode,
+  onSwitchView,
   peerAddress,
   connectedAt,
   onKick,
@@ -54,6 +60,11 @@ export function attachHostTerminal({
     writeToStdout: (text: string) => {
       stdout.write(text);
     },
+    viewMode: "local",
+    switchView: () => {
+      onSwitchView?.();
+      cmdCtx.viewMode = getViewMode?.() ?? "local";
+    },
   };
 
   const onInput = (chunk: string) => {
@@ -68,13 +79,19 @@ export function attachHostTerminal({
       if (commandMode) {
         if (ch === "\r" || ch === "\n") {
           stdout.write("\r\n");
+          cmdCtx.viewMode = getViewMode?.() ?? "local";
           const handled = handleCommand(inputBuffer, cmdCtx);
           if (handled) {
             inputBuffer = "";
             commandMode = false;
             continue;
           }
-          shell.write(inputBuffer + "\r");
+          const mode = getViewMode?.() ?? "local";
+          if (mode === "remote") {
+            sendRevInput?.(inputBuffer + "\r");
+          } else {
+            shell.write(inputBuffer + "\r");
+          }
           inputBuffer = "";
           commandMode = false;
           continue;
@@ -105,12 +122,20 @@ export function attachHostTerminal({
         continue;
       }
 
-      shell.write(ch);
+      const mode = getViewMode?.() ?? "local";
+      if (mode === "remote") {
+        sendRevInput?.(ch);
+      } else {
+        shell.write(ch);
+      }
     }
   };
 
   const dataSubscription = shell.onData?.((data) => {
-    stdout.write(data);
+    const mode = getViewMode?.() ?? "local";
+    if (mode === "local") {
+      stdout.write(data);
+    }
     sendRemote?.(data);
   });
 
