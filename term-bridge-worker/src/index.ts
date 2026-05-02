@@ -11,11 +11,12 @@
  *   GET  /session/:id/ws       → WebSocket upgrade, forwarded into SessionRoom DO
  */
 
+import { DurableObject } from "cloudflare:workers";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 type Bindings = {
-  SESSION_ROOMS: DurableObjectNamespace;
+  SESSION_ROOMS: DurableObjectNamespace<SessionRoom>;
   CODES: KVNamespace;
 };
 
@@ -128,6 +129,125 @@ app.get("/session/:id/ws", async (c) => {
 });
 
 export default app;
+
+export class SessionRoom extends DurableObject {
+  private sockets = new Map<"host" | "client", WebSocket>();
+  private machine = "unknown";
+
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    super(ctx, env);
+  }
+
+  async init(machine: string): Promise<void> {
+    this.machine = machine;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const role = (url.searchParams.get("role") ?? "client") as "host" | "client";
+    return this.handleWebSocketUpgrade(request, role);
+  }
+
+  async handleWebSocketUpgrade(request: Request, role: "host" | "client"): Promise<Response> {
+    this.hydrateSockets();
+
+    if (this.sockets.has(role)) {
+      return new Response(`A ${role} is already connected to this session`, { status: 409 });
+    }
+
+    const { 0: clientSocket, 1: serverSocket } = new WebSocketPair();
+
+    this.ctx.acceptWebSocket(serverSocket, [role]);
+    this.sockets.set(role, serverSocket);
+    console.log(`[DO] ${role} connected, total sockets:`, this.sockets.size);
+
+    if (this.sockets.size === 2) {
+      console.log("[DO] both connected, sending peer_info to host");
+      const hostSocket = this.sockets.get("host")!;
+      const cf = (request as any).cf as { ip?: string } | undefined;
+      this.send(hostSocket, {
+        type: "peer_info",
+        address: cf?.ip ?? "unknown",
+        machine: this.machine,
+      });
+    }
+
+    return new Response(null, {
+      status: 101,
+      webSocket: clientSocket,
+    });
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const tags = this.ctx.getTags(ws);
+    const role = tags[0] as "host" | "client";
+    const peer: "host" | "client" = role === "host" ? "client" : "host";
+
+    const msgStr = message instanceof ArrayBuffer
+      ? new TextDecoder().decode(message)
+      : message;
+    console.log(`[DO] ${role} msg:`, msgStr.substring(0, 80));
+
+    this.hydrateSockets();
+
+    const peerSocket = this.sockets.get(peer);
+    if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+      peerSocket.send(message);
+      console.log(`[DO] relayed to ${peer}`);
+    } else {
+      console.log(`[DO] ${peer} not available, trying ctx.getWebSockets`);
+      for (const sock of this.ctx.getWebSockets()) {
+        const sockTags = this.ctx.getTags(sock);
+        if (sockTags[0] === peer && sock.readyState === WebSocket.OPEN) {
+          sock.send(message);
+          console.log(`[DO] relayed via fallback to ${peer}`);
+          break;
+        }
+      }
+    }
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const tags = this.ctx.getTags(ws);
+    const role = tags[0] as "host" | "client";
+    this.disconnect(role);
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    const tags = this.ctx.getTags(ws);
+    const role = tags[0] as "host" | "client";
+    this.disconnect(role);
+  }
+
+  private hydrateSockets(): void {
+    for (const sock of this.ctx.getWebSockets()) {
+      const tags = this.ctx.getTags(sock);
+      const role = tags[0];
+      if ((role === "host" || role === "client") && sock.readyState === WebSocket.OPEN) {
+        this.sockets.set(role, sock);
+      }
+    }
+  }
+
+  private disconnect(role: "host" | "client"): void {
+    this.hydrateSockets();
+    this.sockets.delete(role);
+
+    const peer: "host" | "client" = role === "host" ? "client" : "host";
+    const peerSocket = this.sockets.get(peer);
+    if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+      this.send(peerSocket, { type: "peer_disconnected", role });
+      peerSocket.close(1000, "Peer disconnected");
+    }
+    this.sockets.delete(peer);
+  }
+
+  private send(ws: WebSocket, data: object): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
+}
 
 function generateCode(): string {
   const arr = new Uint32Array(1);
