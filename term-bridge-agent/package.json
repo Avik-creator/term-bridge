@@ -1,6 +1,6 @@
 {
   "name": "term-bridge-agent",
-  "version": "1.0.5",
+  "version": "1.0.15",
   "description": "Term Bridge host agent - shares your real terminal over a WebRTC DataChannel",
   "bin": {
     "term-bridge": "dist/index.js"
