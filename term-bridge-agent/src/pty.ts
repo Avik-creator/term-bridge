@@ -105,6 +105,11 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
     let peerAddress: string | undefined;
     let connectedAt: Date | undefined;
     let viewMode: "local" | "remote" = "local";
+    let transferState: {
+      filename: string;
+      size: number;
+      chunks: Map<number, string>;
+    } | null = null;
 
     const getViewMode = () => viewMode;
 
@@ -176,6 +181,9 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
                     const rows = process.stdout.rows ?? 24;
                     dc.sendMessage(encodeCtrl({ type: "rev_resize", cols, rows }));
                   }
+                },
+                transferFile: (filepath) => {
+                  sendFile(dc!, filepath);
                 },
                 peerAddress,
                 connectedAt,
@@ -265,22 +273,42 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
           break;
         case "kick":
           break;
-        case "cmd":
-          if (ctrl.cmd === "transfer") {
-            handleIncomingTransfer(ctrl.args);
+        case "cmd_response":
+          process.stdout.write(ctrl.text + "\r\n");
+          break;
+        case "transfer_start":
+          transferState = {
+            filename: ctrl.filename,
+            size: ctrl.size,
+            chunks: new Map(),
+          };
+          process.stdout.write(`\r\n\x1b[36mReceiving file: ${ctrl.filename} (${ctrl.size} bytes)...\x1b[0m\r\n`);
+          break;
+        case "transfer_chunk":
+          if (transferState) {
+            transferState.chunks.set(ctrl.index, ctrl.data);
           }
           break;
-        default:
+        case "transfer_end":
+          if (transferState) {
+            finishTransfer(transferState);
+            transferState = null;
+          }
           break;
       }
     }
 
-    function handleIncomingTransfer(filepath: string): void {
-      if (!dc?.isOpen()) return;
+    function sendFile(dataChannel: nodeDataChannel.DataChannel, filepath: string): void {
+      if (!dataChannel.isOpen()) return;
       const filename = path.basename(filepath);
       try {
         const stat = fs.statSync(filepath);
-        dc.sendMessage(encodeCtrl({ type: "transfer_start", filename, size: stat.size }));
+        if (!stat.isFile()) {
+          process.stdout.write(`\r\n\x1b[31mNot a file: ${filepath}\x1b[0m\r\n`);
+          return;
+        }
+        process.stdout.write(`\r\n\x1b[36mSending ${filename} (${stat.size} bytes)...\x1b[0m\r\n`);
+        dataChannel.sendMessage(encodeCtrl({ type: "transfer_start", filename, size: stat.size }));
         const CHUNK = 16384;
         const fd = fs.openSync(filepath, "r");
         const buf = Buffer.alloc(CHUNK);
@@ -288,13 +316,30 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
         while (true) {
           const read = fs.readSync(fd, buf, 0, CHUNK, idx * CHUNK);
           if (read === 0) break;
-          dc.sendMessage(encodeCtrl({ type: "transfer_chunk", index: idx, data: buf.toString("base64", 0, read) }));
+          dataChannel.sendMessage(encodeCtrl({ type: "transfer_chunk", index: idx, data: buf.toString("base64", 0, read) }));
           idx++;
         }
         fs.closeSync(fd);
-        dc.sendMessage(encodeCtrl({ type: "transfer_end", filename }));
+        dataChannel.sendMessage(encodeCtrl({ type: "transfer_end", filename }));
+        process.stdout.write(`\x1b[32mSent: ${filename}\x1b[0m\r\n`);
       } catch (err) {
-        dc.sendMessage(encodeCtrl({ type: "cmd_response", text: `\x1b[31mTransfer failed: ${err}\x1b[0m` }));
+        process.stdout.write(`\r\n\x1b[31mTransfer failed: ${err}\x1b[0m\r\n`);
+      }
+    }
+
+    function finishTransfer(state: { filename: string; size: number; chunks: Map<number, string> }): void {
+      const outPath = path.join(process.cwd(), state.filename);
+      try {
+        const fd = fs.openSync(outPath, "w");
+        const indices = [...state.chunks.keys()].sort((a, b) => a - b);
+        for (const idx of indices) {
+          const buf = Buffer.from(state.chunks.get(idx)!, "base64");
+          fs.writeSync(fd, buf, 0, buf.length, idx * 16384);
+        }
+        fs.closeSync(fd);
+        process.stdout.write(`\x1b[32mSaved: ${outPath} (${state.size} bytes)\x1b[0m\r\n`);
+      } catch (err) {
+        process.stdout.write(`\x1b[31mTransfer save failed: ${err}\x1b[0m\r\n`);
       }
     }
   });
