@@ -108,6 +108,8 @@ app.get("/join/:code", async (c) => {
     return c.json({ error: "Code not found or expired" }, 404);
   }
 
+  await c.env.CODES.delete(code);
+
   return c.json({ sessionId });
 });
 
@@ -133,6 +135,7 @@ export default app;
 export class SessionRoom extends DurableObject {
   private sockets = new Map<"host" | "client", WebSocket>();
   private machine = "unknown";
+  private sessionEnded = false;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
@@ -150,6 +153,10 @@ export class SessionRoom extends DurableObject {
 
   async handleWebSocketUpgrade(request: Request, role: "host" | "client"): Promise<Response> {
     this.hydrateSockets();
+
+    if (this.sessionEnded) {
+      return new Response("This session has ended", { status: 410 });
+    }
 
     if (this.sockets.has(role)) {
       return new Response(`A ${role} is already connected to this session`, { status: 409 });
@@ -232,6 +239,7 @@ export class SessionRoom extends DurableObject {
   private disconnect(role: "host" | "client"): void {
     this.hydrateSockets();
     this.sockets.delete(role);
+    this.sessionEnded = true;
 
     const peer: "host" | "client" = role === "host" ? "client" : "host";
     const peerSocket = this.sockets.get(peer);
