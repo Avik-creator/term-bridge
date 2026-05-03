@@ -38,7 +38,7 @@ test("host stdin writes into the PTY", () => {
 
   stdin.emit("data", "pwd\r");
 
-  assert.deepEqual(written, ["pwd\r"]);
+  assert.deepEqual(written, ["p", "w", "d", "\r"]);
   assert.equal(stdin.rawMode, true);
   assert.equal(stdin.resumed, true);
 
@@ -91,7 +91,7 @@ test("in remote viewMode stdin goes to sendRevInput instead of shell", () => {
   stdin.emit("data", "ls\r");
 
   assert.deepEqual(written, []);
-  assert.deepEqual(revInput, ["ls\r"]);
+  assert.deepEqual(revInput, ["l", "s", "\r"]);
 });
 
 test("in remote viewMode shell output is sent remotely but not displayed locally", () => {
