@@ -133,8 +133,6 @@ app.get("/session/:id/ws", async (c) => {
 export default app;
 
 export class SessionRoom extends DurableObject {
-  private sockets = new Map<"host" | "client", WebSocket>();
-
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
   }
@@ -145,6 +143,22 @@ export class SessionRoom extends DurableObject {
 
   private async isSessionEnded(): Promise<boolean> {
     return (await this.ctx.storage.get<boolean>("sessionEnded")) ?? false;
+  }
+
+  private getSocketByRole(role: "host" | "client"): WebSocket | undefined {
+    for (const sock of this.ctx.getWebSockets()) {
+      const tags = this.ctx.getTags(sock);
+      if (tags[0] === role && sock.readyState === WebSocket.OPEN) {
+        return sock;
+      }
+    }
+    return undefined;
+  }
+
+  private getActiveCount(): number {
+    return this.ctx.getWebSockets().filter(
+      (s) => s.readyState === WebSocket.OPEN
+    ).length;
   }
 
   async init(machine: string): Promise<void> {
@@ -158,25 +172,22 @@ export class SessionRoom extends DurableObject {
   }
 
   async handleWebSocketUpgrade(request: Request, role: "host" | "client"): Promise<Response> {
-    this.hydrateSockets();
-
     if (await this.isSessionEnded()) {
       return new Response("This session has ended", { status: 410 });
     }
 
-    if (this.sockets.has(role)) {
+    if (this.getSocketByRole(role)) {
       return new Response(`A ${role} is already connected to this session`, { status: 409 });
     }
 
     const { 0: clientSocket, 1: serverSocket } = new WebSocketPair();
 
     this.ctx.acceptWebSocket(serverSocket, [role]);
-    this.sockets.set(role, serverSocket);
-    console.log(`[DO] ${role} connected, total sockets:`, this.sockets.size);
+    console.log(`[DO] ${role} connected, total sockets:`, this.getActiveCount());
 
-    if (this.sockets.size === 2) {
+    if (this.getSocketByRole("host") && this.getSocketByRole("client")) {
       console.log("[DO] both connected, sending peer_info to host");
-      const hostSocket = this.sockets.get("host")!;
+      const hostSocket = this.getSocketByRole("host")!;
       const cf = (request as any).cf as { ip?: string } | undefined;
       this.send(hostSocket, {
         type: "peer_info",
@@ -201,22 +212,12 @@ export class SessionRoom extends DurableObject {
       : message;
     console.log(`[DO] ${role} msg:`, msgStr.substring(0, 80));
 
-    this.hydrateSockets();
-
-    const peerSocket = this.sockets.get(peer);
-    if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+    const peerSocket = this.getSocketByRole(peer);
+    if (peerSocket) {
       peerSocket.send(message);
       console.log(`[DO] relayed to ${peer}`);
     } else {
-      console.log(`[DO] ${peer} not available, trying ctx.getWebSockets`);
-      for (const sock of this.ctx.getWebSockets()) {
-        const sockTags = this.ctx.getTags(sock);
-        if (sockTags[0] === peer && sock.readyState === WebSocket.OPEN) {
-          sock.send(message);
-          console.log(`[DO] relayed via fallback to ${peer}`);
-          break;
-        }
-      }
+      console.log(`[DO] ${peer} not available`);
     }
   }
 
@@ -232,28 +233,15 @@ export class SessionRoom extends DurableObject {
     await this.disconnect(role);
   }
 
-  private hydrateSockets(): void {
-    for (const sock of this.ctx.getWebSockets()) {
-      const tags = this.ctx.getTags(sock);
-      const role = tags[0];
-      if ((role === "host" || role === "client") && sock.readyState === WebSocket.OPEN) {
-        this.sockets.set(role, sock);
-      }
-    }
-  }
-
   private async disconnect(role: "host" | "client"): Promise<void> {
-    this.hydrateSockets();
-    this.sockets.delete(role);
     await this.ctx.storage.put("sessionEnded", true);
 
     const peer: "host" | "client" = role === "host" ? "client" : "host";
-    const peerSocket = this.sockets.get(peer);
-    if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+    const peerSocket = this.getSocketByRole(peer);
+    if (peerSocket) {
       this.send(peerSocket, { type: "peer_disconnected", role });
       peerSocket.close(1000, "Peer disconnected");
     }
-    this.sockets.delete(peer);
   }
 
   private send(ws: WebSocket, data: object): void {
