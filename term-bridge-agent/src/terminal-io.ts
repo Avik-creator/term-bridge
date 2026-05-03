@@ -1,5 +1,5 @@
 import { Writable } from "stream";
-import { handleCommand, CommandContext, encodeCtrl, CtrlMsg } from "./commands";
+import { handleCommand, tabComplete, CommandContext, encodeCtrl, CtrlMsg } from "./commands";
 
 interface ShellLike {
   write(data: string): void;
@@ -25,6 +25,7 @@ export interface HostTerminalOptions {
   sendRevInput?: (data: string) => void;
   getViewMode?: () => "local" | "remote";
   onSwitchView?: () => void;
+  transferFile?: (filepath: string) => void;
   peerAddress?: string;
   connectedAt?: Date;
   onKick?: () => void;
@@ -39,6 +40,7 @@ export function attachHostTerminal({
   sendRevInput,
   getViewMode,
   onSwitchView,
+  transferFile,
   peerAddress,
   connectedAt,
   onKick,
@@ -65,6 +67,7 @@ export function attachHostTerminal({
       onSwitchView?.();
       cmdCtx.viewMode = getViewMode?.() ?? "local";
     },
+    transferFile,
   };
 
   const onInput = (chunk: string) => {
@@ -112,6 +115,21 @@ export function attachHostTerminal({
           stdout.write("^C\r\n");
           inputBuffer = "";
           commandMode = false;
+          continue;
+        }
+
+        if (ch === "\t") {
+          const result = tabComplete(inputBuffer);
+          if (result) {
+            for (let i = 0; i < inputBuffer.length; i++) {
+              stdout.write("\b \b");
+            }
+            if (result.matches && result.matches.length > 1) {
+              stdout.write("\r\n" + result.matches.join("  ") + "\r\n");
+            }
+            inputBuffer = result.completed;
+            stdout.write(inputBuffer);
+          }
           continue;
         }
 
