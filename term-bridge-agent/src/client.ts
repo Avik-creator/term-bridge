@@ -8,6 +8,7 @@ import { closeRtcResources } from "./rtc-cleanup";
 import { spawnShell } from "./pty";
 import {
   handleCommand,
+  tabComplete,
   CommandContext,
   encodeCtrl,
   decodeCtrl,
@@ -145,6 +146,9 @@ export async function connectClient(code: string): Promise<void> {
             viewMode = viewMode === "remote" ? "local" : "remote";
             cmdCtx.viewMode = viewMode;
           },
+          transferFile: (filepath) => {
+            sendFile(channel, filepath);
+          },
         };
 
         const onInput = (chunk: string) => {
@@ -191,6 +195,21 @@ export async function connectClient(code: string): Promise<void> {
                 process.stdout.write("^C\r\n");
                 inputBuffer = "";
                 commandMode = false;
+                continue;
+              }
+
+              if (ch === "\t") {
+                const result = tabComplete(inputBuffer);
+                if (result) {
+                  for (let i = 0; i < inputBuffer.length; i++) {
+                    process.stdout.write("\b \b");
+                  }
+                  if (result.matches && result.matches.length > 1) {
+                    process.stdout.write("\r\n" + result.matches.join("  ") + "\r\n");
+                  }
+                  inputBuffer = result.completed;
+                  process.stdout.write(inputBuffer);
+                }
                 continue;
               }
 
@@ -305,6 +324,35 @@ export async function connectClient(code: string): Promise<void> {
             transferState = null;
           }
           break;
+      }
+    }
+
+    function sendFile(channel: nodeDataChannel.DataChannel, filepath: string): void {
+      if (!channel.isOpen()) return;
+      const filename = path.basename(filepath);
+      try {
+        const stat = fs.statSync(filepath);
+        if (!stat.isFile()) {
+          process.stdout.write(`\r\n\x1b[31mNot a file: ${filepath}\x1b[0m\r\n`);
+          return;
+        }
+        process.stdout.write(`\r\n\x1b[36mSending ${filename} (${stat.size} bytes)...\x1b[0m\r\n`);
+        channel.sendMessage(encodeCtrl({ type: "transfer_start", filename, size: stat.size }));
+        const CHUNK = 16384;
+        const fd = fs.openSync(filepath, "r");
+        const buf = Buffer.alloc(CHUNK);
+        let idx = 0;
+        while (true) {
+          const read = fs.readSync(fd, buf, 0, CHUNK, idx * CHUNK);
+          if (read === 0) break;
+          channel.sendMessage(encodeCtrl({ type: "transfer_chunk", index: idx, data: buf.toString("base64", 0, read) }));
+          idx++;
+        }
+        fs.closeSync(fd);
+        channel.sendMessage(encodeCtrl({ type: "transfer_end", filename }));
+        process.stdout.write(`\x1b[32mSent: ${filename}\x1b[0m\r\n`);
+      } catch (err) {
+        process.stdout.write(`\r\n\x1b[31mTransfer failed: ${err}\x1b[0m\r\n`);
       }
     }
 
