@@ -1,5 +1,8 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
 export type CtrlMsg =
-  | { type: "cmd"; cmd: string; args: string }
   | { type: "cmd_response"; text: string }
   | { type: "resize"; cols: number; rows: number }
   | { type: "kick" }
@@ -36,6 +39,7 @@ export interface CommandContext {
   writeToStdout: (text: string) => void;
   viewMode: "local" | "remote";
   switchView: () => void;
+  transferFile?: (filepath: string) => void;
 }
 
 export function handleCommand(input: string, ctx: CommandContext): boolean {
@@ -63,7 +67,7 @@ export function handleCommand(input: string, ctx: CommandContext): boolean {
       if (ctx.role === "host") {
         ctx.writeToStdout("  \x1b[36m/kick\x1b[0m            Kick the connected client\r\n");
       }
-      ctx.writeToStdout("  \x1b[36m/transfer\x1b[0m <file>  Send a file to peer\r\n");
+      ctx.writeToStdout("  \x1b[36m/transfer\x1b[0m <file>  Send a file to peer (tab to complete)\r\n");
       ctx.writeToStdout("\r\n");
       return true;
 
@@ -104,11 +108,51 @@ export function handleCommand(input: string, ctx: CommandContext): boolean {
         ctx.writeToStdout("\r\n\x1b[31mUsage: /transfer <filepath>\x1b[0m\r\n");
         return true;
       }
-      ctx.sendCtrl({ type: "cmd", cmd: "transfer", args });
+      ctx.transferFile?.(expandPath(args));
       return true;
 
     default:
       ctx.writeToStdout(`\r\n\x1b[31mUnknown command: ${cmd}. Type /help for available commands.\x1b[0m\r\n`);
       return true;
   }
+}
+
+export function expandPath(p: string): string {
+  if (p.startsWith("~")) {
+    return path.join(os.homedir(), p.slice(1));
+  }
+  return path.resolve(p);
+}
+
+export function tabComplete(input: string): { completed: string; matches?: string[] } | null {
+  const prefix = "/transfer ";
+  if (!input.startsWith(prefix)) return null;
+
+  const partial = input.slice(prefix.length);
+  if (!partial) return null;
+
+  const expanded = expandPath(partial);
+  const dir = path.dirname(expanded);
+  const base = path.basename(expanded);
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir).filter((f) => f.startsWith(base));
+  } catch {
+    return null;
+  }
+
+  if (entries.length === 0) return null;
+
+  if (entries.length === 1) {
+    const full = path.join(dir, entries[0]);
+    try {
+      const isDir = fs.statSync(full).isDirectory();
+      return { completed: prefix + full + (isDir ? "/" : "") };
+    } catch {
+      return { completed: prefix + full };
+    }
+  }
+
+  return { completed: input, matches: entries };
 }
