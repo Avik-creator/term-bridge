@@ -27,18 +27,15 @@ export async function connectClient(code: string): Promise<void> {
   const rawCode = code.replace("-", "");
   const signalingBase = getSignalingBase();
 
-  console.error("[CLIENT] Resolving code:", rawCode);
   const joinRes = await fetch(`${signalingBase}/join/${rawCode}`);
   if (!joinRes.ok) {
     throw new Error(`Invalid or expired code: ${code}`);
   }
   const { sessionId } = (await joinRes.json()) as { sessionId: string };
-  console.error("[CLIENT] Got sessionId:", sessionId);
 
   const wsUrl = new URL(`/session/${sessionId}/ws`, signalingBase);
   wsUrl.protocol = wsUrl.protocol.replace("http", "ws");
   wsUrl.searchParams.set("role", "client");
-  console.error("[CLIENT] Connecting to WS:", wsUrl.toString());
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl.toString());
@@ -54,9 +51,7 @@ export async function connectClient(code: string): Promise<void> {
       chunks: Map<number, string>;
     } | null = null;
 
-    ws.on("open", () => {
-      console.error("[CLIENT WS] opened");
-    });
+    ws.on("open", () => {});
     let settled = false;
 
     const done = (err?: Error) => {
@@ -79,20 +74,16 @@ export async function connectClient(code: string): Promise<void> {
     });
 
     pc.onLocalDescription((sdp, type) => {
-      console.error("[PC] local description:", type);
       wsSend(ws, { type, sdp });
     });
 
     pc.onLocalCandidate((candidate, mid) => {
-      console.error("[PC] local candidate:", mid);
       wsSend(ws, { type: "ice", candidate, mid });
     });
 
     pc.onDataChannel((channel) => {
       dc = channel;
-      console.error("[PC] data channel received");
       channel.onOpen(() => {
-        console.error("[DC] opened");
         connectedAt = new Date();
 
         const cols = process.stdout.isTTY
@@ -377,20 +368,15 @@ export async function connectClient(code: string): Promise<void> {
       try { msg = JSON.parse(raw.toString()) as SignalMsg; }
       catch { return; }
 
-      console.error("[WS] received:", msg.type);
-
       switch (msg.type) {
         case "offer":
-          console.error("[PC] setting remote description (offer)...");
           pc.setRemoteDescription(msg.sdp, "offer");
           break;
         case "ice":
-          console.error("[PC] adding remote candidate...");
           pc.addRemoteCandidate(msg.candidate, msg.mid);
           break;
         case "peer_info":
           peerAddress = msg.address;
-          console.error("[WS] peer_info received, closing WS");
           ws.close();
           break;
         case "peer_disconnected":
@@ -400,12 +386,9 @@ export async function connectClient(code: string): Promise<void> {
       }
     });
 
-    ws.on("close", () => {
-      console.error("[WS] closed");
-    });
+    ws.on("close", () => {});
 
-    ws.on("error", (err) => {
-      console.error("[WS] error:", err.message);
+    ws.on("error", () => {
       done(err);
     });
   });

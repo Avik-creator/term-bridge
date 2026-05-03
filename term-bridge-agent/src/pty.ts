@@ -79,8 +79,6 @@ export function spawnShell(cols = 220, rows = 50): pty.IPty {
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
 
-  console.error("[HOST] Spawning shell:", shellBin);
-
   fixPtyNativeBinaries();
 
   const term = pty.spawn(shellBin, [], {
@@ -133,11 +131,8 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
       try { msg = JSON.parse(raw.toString()) as SignalMsg; }
       catch { return; }
 
-      console.error("[HOST WS] received:", msg.type);
-
       switch (msg.type) {
         case "peer_info": {
-          console.error("[HOST] peer connected, creating offer...");
           peerAddress = msg.address;
           connectedAt = new Date();
           opts.onConnected(msg.address);
@@ -147,20 +142,16 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
           });
 
           pc.onLocalDescription((sdp, type) => {
-            console.error("[HOST] local description:", type);
             wsSend(ws, { type, sdp });
           });
 
           pc.onLocalCandidate((candidate, mid) => {
-            console.error("[HOST] local candidate:", mid);
             wsSend(ws, { type: "ice", candidate, mid });
           });
 
           dc = pc.createDataChannel("terminal");
-          console.error("[HOST] DataChannel created");
 
           dc.onOpen(() => {
-            console.error("[HOST] DataChannel opened, spawning shell");
             try {
               shell = spawnShell();
               cleanupHostTerminal = attachHostTerminal({
@@ -201,7 +192,6 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
                 done();
               });
             } catch (err) {
-              console.error("[HOST] Shell spawn failed:", err);
               dc!.sendMessage("\r\n[Failed to spawn shell]\r\n");
             }
           });
@@ -232,35 +222,29 @@ export async function startPtyBridge(opts: PtyBridgeOptions): Promise<void> {
             done();
           });
 
-          dc.onError((err) => console.error("DataChannel error:", err));
+          dc.onError(() => {});
           break;
         }
         case "answer":
           if (pc) {
-            console.error("[HOST] setting remote description (answer)...");
             pc.setRemoteDescription(msg.sdp, "answer");
           }
           break;
         case "ice":
           if (pc) {
-            console.error("[HOST] adding remote candidate...");
             pc.addRemoteCandidate(msg.candidate, msg.mid);
           }
           break;
         case "peer_disconnected":
-          console.error("[HOST] peer disconnected");
           opts.onDisconnected();
           done();
           break;
       }
     });
 
-    ws.on("close", () => {
-      console.error("[HOST WS] closed");
-    });
+    ws.on("close", () => {});
 
     ws.on("error", (err) => {
-      console.error("[HOST WS] error:", err.message);
       done(err);
     });
 
