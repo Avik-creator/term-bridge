@@ -134,15 +134,21 @@ export default app;
 
 export class SessionRoom extends DurableObject {
   private sockets = new Map<"host" | "client", WebSocket>();
-  private machine = "unknown";
-  private sessionEnded = false;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
   }
 
+  private async getMachine(): Promise<string> {
+    return (await this.ctx.storage.get<string>("machine")) ?? "unknown";
+  }
+
+  private async isSessionEnded(): Promise<boolean> {
+    return (await this.ctx.storage.get<boolean>("sessionEnded")) ?? false;
+  }
+
   async init(machine: string): Promise<void> {
-    this.machine = machine;
+    await this.ctx.storage.put("machine", machine);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -154,7 +160,7 @@ export class SessionRoom extends DurableObject {
   async handleWebSocketUpgrade(request: Request, role: "host" | "client"): Promise<Response> {
     this.hydrateSockets();
 
-    if (this.sessionEnded) {
+    if (await this.isSessionEnded()) {
       return new Response("This session has ended", { status: 410 });
     }
 
@@ -175,7 +181,7 @@ export class SessionRoom extends DurableObject {
       this.send(hostSocket, {
         type: "peer_info",
         address: cf?.ip ?? "unknown",
-        machine: this.machine,
+        machine: await this.getMachine(),
       });
     }
 
@@ -217,13 +223,13 @@ export class SessionRoom extends DurableObject {
   async webSocketClose(ws: WebSocket): Promise<void> {
     const tags = this.ctx.getTags(ws);
     const role = tags[0] as "host" | "client";
-    this.disconnect(role);
+    await this.disconnect(role);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     const tags = this.ctx.getTags(ws);
     const role = tags[0] as "host" | "client";
-    this.disconnect(role);
+    await this.disconnect(role);
   }
 
   private hydrateSockets(): void {
@@ -236,10 +242,10 @@ export class SessionRoom extends DurableObject {
     }
   }
 
-  private disconnect(role: "host" | "client"): void {
+  private async disconnect(role: "host" | "client"): Promise<void> {
     this.hydrateSockets();
     this.sockets.delete(role);
-    this.sessionEnded = true;
+    await this.ctx.storage.put("sessionEnded", true);
 
     const peer: "host" | "client" = role === "host" ? "client" : "host";
     const peerSocket = this.sockets.get(peer);
